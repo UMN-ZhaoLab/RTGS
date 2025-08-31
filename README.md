@@ -9,7 +9,7 @@ A real-time Gaussian Splatting implementation for SLAM systems, building upon th
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/Nemo0412/MonoRTGS_ONX.git
 cd MonoRTGS_ONX
 ```
 
@@ -21,19 +21,19 @@ cd MonoRTGS_ONX
 > 
 > For PyTorch and related packages on Jetson devices, please refer to the [NVIDIA Developer Forums - PyTorch for Jetson](https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048?utm_source=chatgpt.com) to find the appropriate pre-built wheels for your specific JetPack version and Python version.
 > 
-> **Recommended approach for ONX:**
-> ```bash
-> # Create a new conda environment
-> conda create -n MonoRTGS_ONX python=3.10
-> conda activate MonoRTGS_ONX
-> 
-> # Install PyTorch manually using NVIDIA's pre-built wheels
-> # Example for JetPack 6.0 (adjust version as needed):
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-> 
-> # Install other dependencies manually
-> pip install numpy opencv-python matplotlib scipy
-> ```
+**Recommended approach for ONX:**
+```bash
+# Create a new conda environment
+conda create -n MonoRTGS_ONX python=3.10
+conda activate MonoRTGS_ONX
+
+# Install PyTorch manually using NVIDIA's pre-built wheels
+# Example for JetPack 6.0 (adjust version as needed):
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install other dependencies manually
+pip install numpy opencv-python matplotlib scipy
+```
 
 ## 🚀 Usage
 
