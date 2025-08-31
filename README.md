@@ -1,5 +1,7 @@
 # RTGS: Real-Time 3D Gaussian Splatting SLAM via Multi-Level Redundancy Reduction
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17013198.svg)](https://doi.org/10.5281/zenodo.17013198)
+
 A real-time Gaussian Splatting implementation for SLAM systems, building upon the excellent work of MonoGS and Photo-SLAM.
 
 **This is the ONX (Edge GPU) version of MonoRTGS.** If you want to run on RTX or A100 GPUs, please refer to the original repository: [https://github.com/Nemo0412/MonoRTGS.git](https://github.com/Nemo0412/MonoRTGS.git)
