@@ -1,0 +1,126 @@
+# Datasets (excluded as requested)
+Baseline/datasets/
+MonoRTGS/datasets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+wandb/
+
+# Results and outputs
+results/
+outputs/
+checkpoints/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Git submodules (if you want to exclude them)
+# submodules/
+
+# Large media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.tif
+
+# Exclude test files and documentation
+**/test/
+**/tests/
+**/doc/
+**/docs/
+**/api/
+**/manual.md
+**/readme.md
+**/CMakeLists.txt
+**/Makefile
+**/*.cpp
+**/*.cc
+**/*.c
+**/*.h
+**/*.hpp
+**/*.cu
+**/*.mk
+**/*.xml
+**/*.dat
+**/*.txt
+**/*.js
+**/*.css
+**/*.html
+
+# Keep only essential Python files
+!**/*.py
+!**/pyproject.toml
+!**/Dependencies.md
+!**/LICENSE.md
+!**/README.md
+!**/environment.yml
+!**/*.sh
+!**/*.json
+!**/*.txt
