@@ -67,23 +67,6 @@ The `run_slam.sh` script allows you to run both baseline and MonoRTGS versions o
 ./run_slam.sh monortgs configs/rgbd/replica/office1.yaml
 ```
 
-#### Supported Datasets:
-
-**TUM RGB-D Dataset:**
-- `configs/rgbd/tum/fr1_desk.yaml`
-- `configs/rgbd/tum/fr2_xyz.yaml` 
-- `configs/rgbd/tum/fr3_office.yaml`
-
-**Replica Dataset:**
-- `configs/rgbd/replica/office0.yaml`
-- `configs/rgbd/replica/office1.yaml`
-- `configs/rgbd/replica/office2.yaml`
-- `configs/rgbd/replica/office3.yaml`
-- `configs/rgbd/replica/office4.yaml`
-- `configs/rgbd/replica/room0.yaml`
-- `configs/rgbd/replica/room1.yaml`
-- `configs/rgbd/replica/room2.yaml`
-
 ### 2. Hardware Evaluation (run_hardware_eval.sh)
 
 The `run_hardware_eval.sh` script runs the RTGS hardware speedup evaluation on ONX edge GPU:
