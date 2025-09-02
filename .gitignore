@@ -7,6 +7,10 @@ datasets/
 # Results
 results/
 
+# Weights & Biases
+wandb/
+*.wandb
+
 # Python cache
 __pycache__/
 *.pyc
