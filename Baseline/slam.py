@@ -152,7 +152,6 @@ class SLAM:
             self.gaussians = self.frontend.gaussians
             kf_indices = self.frontend.kf_indices
             # Skip ATE evaluation to avoid errors
-            Log("Skipping ATE evaluation to avoid errors")
             ATE = 0.0  # Placeholder value
 
             rendering_result = eval_rendering(
@@ -166,15 +165,21 @@ class SLAM:
                 iteration="before_opt",
             )
             columns = ["tag", "psnr", "ssim", "lpips", "RMSE ATE", "FPS"]
-            metrics_table = wandb.Table(columns=columns)
-            metrics_table.add_data(
-                "Before",
-                rendering_result["mean_psnr"],
-                rendering_result["mean_ssim"],
-                rendering_result["mean_lpips"],
-                ATE,
-                FPS,
-            )
+            # Only create wandb table if wandb is enabled
+            if self.config["Results"].get("use_wandb", False):
+                import wandb
+                metrics_table = wandb.Table(columns=columns)
+                metrics_table.add_data(
+                    "Before",
+                    rendering_result["mean_psnr"],
+                    rendering_result["mean_ssim"],
+                    rendering_result["mean_lpips"],
+                    ATE,
+                    FPS,
+                )
+            else:
+                # Just log the metrics without wandb
+                Log(f"Before optimization - PSNR: {rendering_result['mean_psnr']:.4f}")
 
             # re-used the frontend queue to retrive the gaussians from the backend.
             while not frontend_queue.empty():
@@ -200,15 +205,19 @@ class SLAM:
                 kf_indices=kf_indices,
                 iteration="after_opt",
             )
-            metrics_table.add_data(
-                "After",
-                rendering_result["mean_psnr"],
-                rendering_result["mean_ssim"],
-                rendering_result["mean_lpips"],
-                ATE,
-                FPS,
-            )
-            # wandb.log({"Metrics": metrics_table})  # Disabled wandb
+            if self.config["Results"].get("use_wandb", False):
+                metrics_table.add_data(
+                    "After",
+                    rendering_result["mean_psnr"],
+                    rendering_result["mean_ssim"],
+                    rendering_result["mean_lpips"],
+                    ATE,
+                    FPS,
+                )
+                # wandb.log({"Metrics": metrics_table})  # Disabled wandb
+            else:
+                # Just log the metrics without wandb
+                Log(f"After optimization - PSNR: {rendering_result['mean_psnr']:.4f}")
             save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
 
         if self.use_multiprocessing:
@@ -237,9 +246,6 @@ if __name__ == "__main__":
         mp.set_start_method("spawn", force=True)
     except RuntimeError:
         Log("Multiprocessing start method already set, continuing...")
-
-    with open(args.config, "r") as yml:
-        config = yaml.safe_load(yml)
 
     config = load_config(args.config)
     save_dir = None

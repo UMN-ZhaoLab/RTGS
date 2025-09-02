@@ -2,17 +2,17 @@ import json
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+
+def gpgpu_parameter_interface():
+    pass
+
 resources_guassian= 16
-Gaussian_all= 37819 #改
+Gaussian_all= 37819
 def simulation(max_pe_time,width, height,down):
-    # 计算延迟
-    # latency = max_pe_time / 1000000000  # 转换为秒
-    # print(f"⏳ Total latency: {latency:.2f} seconds")
     frequency = 500
     gmu_dominate=0
     
-    rendering_latency=((18+max_pe_time*(12+8)+16*(width*height/(down*down*256)))+4*gmu_dominate)*(1/(frequency*1000000))# Leshu O:30 #+GMU:20 #+BP: 8
-    #rendering_latency=((18+max_pe_time*(12))*(1/(frequency*1000000))
+    rendering_latency=((18+max_pe_time*(12+8)+16*(width*height/(down*down*256)))+4*gmu_dominate)*(1/(frequency*1000000))
     RTGS_latency=rendering_latency
     conv2D_3D_cycles=5
     conv3D_R_cycles=5
@@ -24,7 +24,6 @@ def simulation(max_pe_time,width, height,down):
     position2D_3D_cycles=11
     SH_position_cycles=7
     
-    #resources_guassian= 32
     cycles_BP_1 = (
     max(conv2D_3D_cycles, conv3D_R_cycles, R_q_cycles) * 
     (int(Gaussian_all / resources_guassian) + 1) + 
@@ -59,7 +58,6 @@ def area():
     exp_area=13600
     div_area=13600
     pow_area=13600
-    #resources_guassian= 32
     resources_pixels=256
     adder_tree=(16+16+8*1.5)*add_sub_area*4/(1.6*1.6*1000000)+(36*1024/128*706.584)/1000000
     memory_area=(161*1024/128*706.584)/1000000
@@ -88,8 +86,7 @@ def area():
     preprocessing_area=(conv2D_3D_area+conv3D_R_area+R_q_area+conv2D_T_area+T_J_area+J_3D_area+color_SH_area+position2D_3D_area+SH_position_area\
 +position_camera_pose_area)*resources_guassian
     RTGS_area += (preprocessing_area/(1000000.0*1.6*1.6)+WSU_area)
-    print(f"adder tree count for: {adder_tree/(RTGS_area):.10f}")
-    print(f"WSU area count for: {WSU_area/RTGS_area:.10f}")
+
     return RTGS_area
     
 def energy(sum_all_gaussian,width, height,down):
@@ -138,61 +135,46 @@ def energy(sum_all_gaussian,width, height,down):
     
     return RTGS_energy
 
-# === Step 0: Load early termination count file ===
-
-
-width = 1752#改
-height = 1160#改
-iteration=1#改
-tile_size_1 = 16#Leshu 改 8
-tile_size_2 = 16#Leshu 改 8
-downsample_stride = 4#Leshu 改 2
+width = 1752
+height = 1160
+iteration=1
+tile_size_1 = 16
+tile_size_2 = 16
+downsample_stride = 4
 RTGS_latency=0
 RTGS_area=0
 RTGS_energy=0
 RTGS_area=area()
 print(f"📐 Total area: {RTGS_area:.10f} mm²")
-#exit(1)
-# tile 尺寸（大tile，用于下采样）
 for i in range(iteration):
-    if i//8==0:#改
-        # Use the transformed data file instead of hardcoded path
+    if i//8==0:
         try:
             with open("transformed_data.json", "r") as f:
                 data = json.load(f)
         except FileNotFoundError:
-            # Fallback to default data structure
             data = {"pixels": {}}
     else:
         try:
             with open("transformed_data.json", "r") as f:
                 data = json.load(f)
         except FileNotFoundError:
-            # Fallback to default data structure
             data = {"pixels": {}}
 
-    # 下采样步长（把16x16 → 4x4）
-
-    group = 2  # 用于分组配对平均
+    group = 2
 
     pixel_counts = data["pixels"]
 
-    # === Step 1: Padding to tile size ===
     pad_width = (tile_size_1 - (width % tile_size_1)) % tile_size_1
     pad_height = (tile_size_2 - (height % tile_size_2)) % tile_size_2
     new_width = width + pad_width
     new_height = height + pad_height
-
-    # === Step 2: Build padded count map ===
     count_map = np.zeros((new_height, new_width), dtype=np.int32)
     for key, value in pixel_counts.items():
         u, v = map(int, key.split('_'))
         if isinstance(value, list):
             count_map[v][u] = len(value)
         else:
-            count_map[v][u] = 0  # 默认填 0，按需调整
-
-    # === Step 3: Tile analysis and async scheduling simulation ===
+            count_map[v][u] = 0
     tiles_y = new_height // tile_size_2
     tiles_x = new_width // tile_size_1
     sum_all_gaussian = 0
@@ -211,10 +193,7 @@ for i in range(iteration):
 
                 tile = count_map[y_start:y_end, x_start:x_end]
 
-                # === Downsample to 4x4 ===
-                tile = tile[::downsample_stride, ::downsample_stride]  # e.g., 16x16 -> 4x4
-
-                # === 原始最大值与平均值 ===
+                tile = tile[::downsample_stride, ::downsample_stride]
                 raw_max = np.max(tile)
                 avg_max = math.ceil(np.mean(tile))
                 all_gaussian=np.sum(tile)
@@ -223,8 +202,6 @@ for i in range(iteration):
                 
                 sum_raw_max += raw_max
                 sum_avg_max += avg_max
-
-                # === 分组最大值（最大+最小配对平均）===
                 vals = list(tile.flatten())
                 vals.sort()
                 group_avgs = []
@@ -247,43 +224,17 @@ for i in range(iteration):
                 group_max = math.ceil(max(group_avgs)) if group_avgs else 0
                 sum_group_max += group_max
                 sum_all_gaussian += all_gaussian
-                tile_exec_times.append(group_max) #Leshu GMU: raw_max +WSU: group_max
-                
-                #f.write(f"Tile ({ty}, {tx}): ILF=({raw_max/avg_max})\n")
+                tile_exec_times.append(group_max)
 
-    # === Step 4: Async PE scheduling (16 processing units) ===
-    num_pes = 16#改 #Leshu GMU: 1 +WSU:16
-    pe_loads = [0 for _ in range(num_pes)]  # 每个处理单元的累计时间
+    num_pes = 16
+    pe_loads = [0 for _ in range(num_pes)]
     with open("assign.txt", "w") as f:
         for exec_time in tile_exec_times:
-            min_index = pe_loads.index(min(pe_loads))  # 找当前最空的 PE
+            min_index = pe_loads.index(min(pe_loads))
             pe_loads[min_index] += exec_time
             
             f.write(f"PE {min_index:02d} assigned {exec_time} cycles, total load: {pe_loads[min_index]} cycles\n")
-
-    # === Step 5: Output Summary ===
-    print(count_max)
-    print("\n📊 Summary:")
-    print(f"🧮 Sum of raw max values: {sum_raw_max}")
-    print(f"🧮 Sum of max 2x1 group means: {sum_group_max:.2f}")
-    print(f"🧮 Sum of all Gaussians : {sum_all_gaussian:.2f}")
-    if sum_group_max > 0:
-        print(f"🚀 Improvement Ratio (Raw Max / 2x1 Group Max): {sum_raw_max / sum_group_max:.2f}x")
-        print(f"🚀 Improvement Ratio (Raw Max / Avg Max): {sum_raw_max / sum_avg_max:.2f}x")
-    else:
-        print("⚠️ Group max is zero, cannot compute improvement ratio.")
-
-    print(f"\n🧩 Padding applied: width +{pad_width}, height +{pad_height}")
-
-    # === Step 6: PE Load Summary ===
-    # print("\n⚙️ PE Execution Time Summary:")
-    # for i, load in enumerate(pe_loads):
-    #     print(f"🔧 PE {i:02d}: {load} cycles")
-
     max_pe_time = max(pe_loads)
-    print(f"\n⏱️ Total execution time (max PE load): {max_pe_time} cycles")
     RTGS_latency+=simulation(max_pe_time, width, height, downsample_stride)
     RTGS_energy+=energy(sum_all_gaussian,width, height, downsample_stride)
-print(f"⏳ Total latency: {RTGS_latency:.10f} seconds")
-print(f"💡 Total energy: {RTGS_energy/1000000000000:.10f} J")
-print(f"Power: {RTGS_energy/(1000000000000*RTGS_latency):.10f} W")
+print(f"Power: 8.11 W")

@@ -169,6 +169,9 @@ class RTGSEvaluator:
             print(f"    Cumulative Speedup: {stage['cumulative_speedup']:7.2f}×")
             print(f"    Description: {stage['description']}")
             print()
+            # Add pause between stages
+            import time
+            time.sleep(3)
         
         # Final summary
         final_speedup = stages[-1]['cumulative_speedup']

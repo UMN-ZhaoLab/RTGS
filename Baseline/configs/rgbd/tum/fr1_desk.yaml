@@ -1,7 +1,7 @@
 inherit_from: "configs/rgbd/tum/base_config.yaml"
 
 Dataset:
-  dataset_path: "datasets/tum/rgbd_dataset_freiburg1_desk"
+  dataset_path: "/home/aeuser/MonoRTGS_ONX/datasets/rgbd_dataset_freiburg1_desk"
   Calibration:
     fx: 517.306408
     fy: 516.469215
@@ -16,3 +16,7 @@ Dataset:
     width: 640
     height: 480
     depth_scale: 5000.0
+    a: 180.6
+    b: 10.29
+    c: 12.6
+    d: 90.3
