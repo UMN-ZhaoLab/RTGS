@@ -1,9 +1,0 @@
-inherit_from: "configs/rgbd/replica/base_config.yaml"
-Dataset:
-  dataset_path: "datasets/replica/office4/"
-  single_thread: False
-  Calibration:
-    a: 273.98
-    b: 2.03
-    c: 25.2
-    d: 44.8
