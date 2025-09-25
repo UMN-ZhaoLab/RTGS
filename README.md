@@ -151,7 +151,3 @@ We gratefully acknowledge their open-source contributions, which make this proje
 
 
 
-
-# RTGS-Real-Time-3D-Gaussian-Splatting-SLAM-via-Multi-Level-Redundancy-Reduction
-# RTGS-Real-Time-3D-Gaussian-Splatting-SLAM-via-Multi-Level-Redundancy-Reduction
-# RTGS
