@@ -67,19 +67,6 @@ The `run_slam.sh` script allows you to run both baseline and MonoRTGS versions o
 ./run_slam.sh monortgs configs/rgbd/replica/office1.yaml
 ```
 
-### 2. Hardware Evaluation (run_hardware_eval.sh)
-
-The `run_hardware_eval.sh` script runs the RTGS hardware speedup evaluation on ONX edge GPU:
-
-```bash
-./run_hardware_eval.sh
-```
-
-This script will:
-- Activate the Python virtual environment (`~/venvs/jp6torch`)
-- Check for the point cloud file
-- Run the evaluation with the configured point cloud path
-- Display detailed speedup analysis results
 
 #### Configuration:
 
