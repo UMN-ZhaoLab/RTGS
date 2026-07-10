@@ -147,18 +147,17 @@ The table below is reproduced from our benchmark on **fr1_desk**, **fr2_xyz**, a
 | **PSNR** | 27.26 dB | 27.34 dB | +0.09 |
 | **ATE** | 1.59 cm | 1.52 cm | -4.0% |
 | **FPS** | 1.86 | 4.98 | **+2.7×** |
-| **Memory** | 1.99 GB | 2.01 GB | ~0% |
 
 Per-scene breakdown:
 
-| Scene | Method | PSNR (dB) | ATE (cm) | FPS | Memory (GB) |
-|-------|--------|-----------|----------|-----|-------------|
-| fr1_desk | Baseline | 27.25 | 1.61 | 2.43 | 1.72 |
-| fr1_desk | RTGS Soft | 27.34 | 1.55 | 7.80 | 1.71 |
-| fr2_xyz | Baseline | 27.26 | 1.57 | 1.64 | 2.21 |
-| fr2_xyz | RTGS Soft | 27.34 | 1.51 | 3.34 | 2.23 |
-| fr3_office | Baseline | 27.26 | 1.57 | 1.52 | 2.02 |
-| fr3_office | RTGS Soft | 27.34 | 1.51 | 3.81 | 2.08 |
+| Scene | Method | PSNR (dB) | ATE (cm) | FPS |
+|-------|--------|-----------|----------|-----|
+| fr1_desk | Baseline | 27.25 | 1.61 | 2.43 |
+| fr1_desk | RTGS Soft | 27.34 | 1.55 | 7.80 |
+| fr2_xyz | Baseline | 27.26 | 1.57 | 1.64 |
+| fr2_xyz | RTGS Soft | 27.34 | 1.51 | 3.34 |
+| fr3_office | Baseline | 27.26 | 1.57 | 1.52 |
+| fr3_office | RTGS Soft | 27.34 | 1.51 | 3.81 |
 
 At sequence end, RTGS Soft keeps approximately **50%** of the Baseline Gaussian count (adaptive pruning target).
 
