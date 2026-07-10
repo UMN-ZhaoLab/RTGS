@@ -4,8 +4,21 @@ datasets/
 *.zip
 *.tar.gz
 
-# Results
+# Experiment outputs
 results/
+comparison_results/**/*.log
+comparison_results/**/*_time.txt
+comparison_results/**/full_comparison_report.json
+comparison_results/baseline.log
+comparison_results/monortgs.log
+comparison_results/baseline_time.txt
+comparison_results/monortgs_time.txt
+comparison_results/comparison_report.json
+
+# Build artifacts
+**/build/
+**/*.egg-info/
+**/*.so
 
 # Weights & Biases
 wandb/
@@ -22,6 +35,7 @@ __pycache__/
 venv/
 env/
 ENV/
+rtgs_venv/
 
 # IDE
 .vscode/

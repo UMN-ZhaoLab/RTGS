@@ -694,37 +694,31 @@ class GaussianModel:
         )
         self.denom[update_filter] += 1
 
-    def adaptive_pruning(self, target_reduction_ratio=0.5, frame_idx=0, total_frames=100):
+    def adaptive_pruning(
+        self,
+        target_reduction_ratio=0.5,
+        frame_idx=0,
+        total_frames=100,
+    ):
         """
-        Adaptive pruning method that removes gaussians gradually over frames
-        to achieve target_reduction_ratio total reduction by the end
-        
-        Args:
-            target_reduction_ratio: Total reduction ratio (0.5 means 50% reduction)
-            frame_idx: Current frame index
-            total_frames: Total number of frames
+        Adaptive pruning that gradually approaches target_reduction_ratio
+        reduction relative to the cumulative reference map size.
         """
-        if frame_idx == 0:
-            # Store initial count for reference
-            self.initial_gaussian_count = self.get_xyz.shape[0]
-            self.target_final_count = int(self.initial_gaussian_count * (1 - target_reduction_ratio))
-            # Log(f"Initial gaussian count: {self.initial_gaussian_count}, target final count: {self.target_final_count}")
-        
-        if not hasattr(self, 'initial_gaussian_count'):
-            return
-        
+        if not hasattr(self, "reference_gaussian_count"):
+            self.reference_gaussian_count = self.get_xyz.shape[0]
+
         current_count = self.get_xyz.shape[0]
-        if current_count <= self.target_final_count:
-            return
-        
-        # Calculate how many to remove this frame
-        progress_ratio = frame_idx / max(total_frames, 1)
-        current_target_count = int(self.initial_gaussian_count * (1 - target_reduction_ratio * progress_ratio))
-        current_target_count = max(current_target_count, self.target_final_count)
-        
+        reference_count = self.reference_gaussian_count
+        progress_ratio = min(1.0, frame_idx / max(total_frames - 1, 1))
+        target_final_count = int(reference_count * (1 - target_reduction_ratio))
+        current_target_count = int(
+            reference_count * (1 - target_reduction_ratio * progress_ratio)
+        )
+        current_target_count = max(current_target_count, target_final_count)
+
         if current_count <= current_target_count:
-            return
-        
+            return 0
+
         gaussians_to_remove = current_count - current_target_count
         
         # Create pruning mask based on multiple criteria
@@ -756,5 +750,4 @@ class GaussianModel:
         
         # Apply pruning
         self.prune_points(prune_mask)
-        
-        # Log(f"Frame {frame_idx}: Removed {gaussians_to_remove} gaussians, remaining: {self.get_xyz.shape[0]}")
+        return gaussians_to_remove

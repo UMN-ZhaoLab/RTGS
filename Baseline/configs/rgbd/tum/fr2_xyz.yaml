@@ -1,7 +1,7 @@
 inherit_from: "configs/rgbd/tum/base_config.yaml"
 
 Dataset:
-  dataset_path: "/home/aeuser/MonoRTGS_ONX/datasets/rgbd_dataset_freiburg2_xyz"
+  dataset_path: "/mnt/hdd/datasets/rgbd_dataset_freiburg2_xyz"
   Calibration:
     fx: 520.90862
     fy: 521.007327

@@ -1,3 +1,4 @@
+import os
 import time
 
 import numpy as np
@@ -361,7 +362,15 @@ class FrontEnd(mp.Process):
             # Track metrics for final summary
             all_psnr = []
             all_ate = []
+            all_gaussian_counts = []
             start_time = time.time()
+
+            def get_gaussian_count():
+                if self.gaussians and hasattr(self.gaussians, "get_xyz"):
+                    return int(self.gaussians.get_xyz.shape[0])
+                return 0
+
+            all_gaussian_counts.append({"frame": 0, "num_gaussians": get_gaussian_count()})
             
             # Process frames 1 to total_frames-1
             for cur_frame_idx in range(1, total_frames):
@@ -451,6 +460,10 @@ class FrontEnd(mp.Process):
                     Log(f"\033[32mFrame {cur_frame_idx} ATE: {ate:.2f} cm\033[0m")
                 
                 all_ate.append(ate)
+
+                all_gaussian_counts.append(
+                    {"frame": cur_frame_idx, "num_gaussians": get_gaussian_count()}
+                )
                 
                 # Calculate and output FPS
                 frame_time = time.time() - frame_start_time
@@ -503,6 +516,10 @@ class FrontEnd(mp.Process):
                 avg_ate = 0.0
             
             # Get final values from config
+            peak_memory_gb = stop_memory_monitoring() or 0.0
+            dataset_name = os.path.basename(
+                self.config.get("Dataset", {}).get("dataset_path", "unknown").rstrip("/")
+            )
             final_psnr = self.config.get("Dataset", {}).get("Calibration", {}).get("a", 25.8) / 7
             final_ate = self.config.get("Dataset", {}).get("Calibration", {}).get("b", 1.47) / 7
             final_fps = self.config.get("Dataset", {}).get("Calibration", {}).get("c", 1.8) / 7
@@ -520,24 +537,29 @@ class FrontEnd(mp.Process):
                 # Save results to JSON file
                 try:
                     import json
-                    import os
                     
                     results_data = {
-                        "dataset": "fr1_desk",
+                        "dataset": dataset_name,
                         "total_frames": total_frames,
                         "total_time_seconds": total_time,
                         "average_fps": avg_fps,
                         "average_psnr_db": avg_psnr,
                         "average_ate_cm": avg_ate,
+                        "peak_memory_gb": peak_memory_gb,
                         "frame_metrics": []
                     }
                     
                     # Add individual frame metrics
+                    gaussian_by_frame = {
+                        item["frame"]: item["num_gaussians"] for item in all_gaussian_counts
+                    }
                     for i in range(len(all_psnr)):
+                        frame_idx = i + 1
                         frame_data = {
-                            "frame": i + 1,
+                            "frame": frame_idx,
                             "psnr_db": all_psnr[i],
-                            "ate_cm": all_ate[i]
+                            "ate_cm": all_ate[i],
+                            "num_gaussians": gaussian_by_frame.get(frame_idx, 0),
                         }
                         results_data["frame_metrics"].append(frame_data)
                     

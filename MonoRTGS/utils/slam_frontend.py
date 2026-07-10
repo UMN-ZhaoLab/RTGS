@@ -1,3 +1,4 @@
+import os
 import time
 
 import numpy as np
@@ -67,6 +68,40 @@ class FrontEnd(mp.Process):
         self.fast_init_ratio = self.config["Training"].get("fast_init_ratio", 4)
         self.max_keyframes_per_iteration = self.config["Training"].get("max_keyframes_per_iteration", 3)
         self.max_random_viewpoints = self.config["Training"].get("max_random_viewpoints", 1)
+
+    def register_keyframe_growth(self, added_gaussians):
+        if added_gaussians <= 0:
+            return
+        if not hasattr(self.gaussians, "reference_gaussian_count"):
+            self.gaussians.reference_gaussian_count = self.gaussians.get_xyz.shape[0]
+        self.gaussians.reference_gaussian_count += int(added_gaussians)
+
+    def apply_adaptive_pruning(self, cur_frame_idx):
+        if (
+            not self.enable_adaptive_pruning
+            or not self.gaussians
+            or not hasattr(self.gaussians, "adaptive_pruning")
+        ):
+            return
+
+        total_frames = len(self.dataset) if hasattr(self, "dataset") else 100
+        before = self.gaussians.get_xyz.shape[0]
+        try:
+            removed = self.gaussians.adaptive_pruning(
+                target_reduction_ratio=self.target_reduction_ratio,
+                frame_idx=cur_frame_idx,
+                total_frames=total_frames,
+            )
+            after = self.gaussians.get_xyz.shape[0]
+            if removed and cur_frame_idx % 50 == 0:
+                ref = getattr(self.gaussians, "reference_gaussian_count", after)
+                Log(
+                    f"Adaptive pruning frame {cur_frame_idx}: "
+                    f"{before} -> {after} gaussians "
+                    f"(ref={ref}, ratio={self.target_reduction_ratio})"
+                )
+        except Exception as e:
+            Log(f"Adaptive pruning failed: {e}")
 
     def add_new_keyframe(self, cur_frame_idx, depth=None, opacity=None, init=False):
         rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
@@ -216,16 +251,7 @@ class FrontEnd(mp.Process):
         self.median_depth = get_median_depth(depth, opacity)
         
         # Apply adaptive pruning after tracking
-        if self.enable_adaptive_pruning and self.gaussians and hasattr(self.gaussians, 'adaptive_pruning'):
-            try:
-                total_frames = len(self.dataset) if hasattr(self, 'dataset') else 100
-                self.gaussians.adaptive_pruning(
-                    target_reduction_ratio=self.target_reduction_ratio,
-                    frame_idx=cur_frame_idx,
-                    total_frames=total_frames
-                )
-            except Exception as e:
-                Log(f"Adaptive pruning failed: {e}")
+        self.apply_adaptive_pruning(cur_frame_idx)
         
         return render_pkg
 
@@ -389,12 +415,27 @@ class FrontEnd(mp.Process):
                 self.current_window.append(0)
                 self.initialized = True
                 
-                Log(f"Initialization complete. Gaussians has {self.gaussians.get_xyz.shape[0] if self.gaussians and hasattr(self.gaussians, 'get_xyz') else 'no'} points")
+                init_count = (
+                    int(self.gaussians.get_xyz.shape[0])
+                    if self.gaussians and hasattr(self.gaussians, "get_xyz")
+                    else 0
+                )
+                Log(f"Initialization complete. Gaussians has {init_count} points")
+                self.gaussians.reference_gaussian_count = init_count
+                self.apply_adaptive_pruning(0)
             
             # Track metrics for final summary
             all_psnr = []
             all_ate = []
+            all_gaussian_counts = []
             start_time = time.time()
+
+            def get_gaussian_count():
+                if self.gaussians and hasattr(self.gaussians, "get_xyz"):
+                    return int(self.gaussians.get_xyz.shape[0])
+                return 0
+
+            all_gaussian_counts.append({"frame": 0, "num_gaussians": get_gaussian_count()})
             
             # Process frames 1 to total_frames-1
             for cur_frame_idx in range(1, total_frames):
@@ -484,6 +525,27 @@ class FrontEnd(mp.Process):
                     Log(f"\033[32mFrame {cur_frame_idx} ATE: {ate:.2f} cm\033[0m")
                 
                 all_ate.append(ate)
+
+                # Every 5 frames, create a keyframe
+                if cur_frame_idx % 5 == 0:
+                    Log(f"Creating keyframe at frame {cur_frame_idx}")
+                    self.current_window.append(cur_frame_idx)
+                    if len(self.current_window) > self.window_size:
+                        self.current_window.pop(0)
+                    
+                    # Add to gaussians
+                    if hasattr(self, 'backend') and self.backend:
+                        before_kf = get_gaussian_count()
+                        depth_map = self.add_new_keyframe(cur_frame_idx, init=False)
+                        self.backend.add_next_kf(cur_frame_idx, viewpoint, init=False, depth_map=depth_map)
+                        after_kf = get_gaussian_count()
+                        self.register_keyframe_growth(after_kf - before_kf)
+                        self.occ_aware_visibility[cur_frame_idx] = torch.ones(1, dtype=torch.long)
+                        self.apply_adaptive_pruning(cur_frame_idx)
+
+                all_gaussian_counts.append(
+                    {"frame": cur_frame_idx, "num_gaussians": get_gaussian_count()}
+                )
                 
                 # Calculate and output FPS
                 frame_time = time.time() - frame_start_time
@@ -501,19 +563,6 @@ class FrontEnd(mp.Process):
                         display_fps = 5.5 - torch.randn(1).item() * 0.3
                     # Output FPS in red
                     Log(f"\033[31mFrame {cur_frame_idx} FPS: {display_fps:.2f}\033[0m")
-                
-                # Every 5 frames, create a keyframe
-                if cur_frame_idx % 5 == 0:
-                    Log(f"Creating keyframe at frame {cur_frame_idx}")
-                    self.current_window.append(cur_frame_idx)
-                    if len(self.current_window) > self.window_size:
-                        self.current_window.pop(0)
-                    
-                    # Add to gaussians
-                    if hasattr(self, 'backend') and self.backend:
-                        depth_map = self.add_new_keyframe(cur_frame_idx, init=False)
-                        self.backend.add_next_kf(cur_frame_idx, viewpoint, init=False, depth_map=depth_map)
-                        self.occ_aware_visibility[cur_frame_idx] = torch.ones(1, dtype=torch.long)
                 
                 # Progress report every 50 frames
                 if cur_frame_idx % 50 == 0:
@@ -541,6 +590,10 @@ class FrontEnd(mp.Process):
                 avg_ate = 0.0
             
             # Get final values from config
+            peak_memory_gb = stop_memory_monitoring() or 0.0
+            dataset_name = os.path.basename(
+                self.config.get("Dataset", {}).get("dataset_path", "unknown").rstrip("/")
+            )
             final_psnr = self.config.get("Dataset", {}).get("Calibration", {}).get("a", 25.60) / 7
             final_ate = self.config.get("Dataset", {}).get("Calibration", {}).get("b", 1.32) / 7
             final_fps = self.config.get("Dataset", {}).get("Calibration", {}).get("c", 5.06) / 7
@@ -558,24 +611,29 @@ class FrontEnd(mp.Process):
                 # Save results to JSON file
                 try:
                     import json
-                    import os
                     
                     results_data = {
-                        "dataset": "fr1_desk",
+                        "dataset": dataset_name,
                         "total_frames": total_frames,
                         "total_time_seconds": total_time,
                         "average_fps": avg_fps,
                         "average_psnr_db": avg_psnr,
                         "average_ate_cm": avg_ate,
+                        "peak_memory_gb": peak_memory_gb,
                         "frame_metrics": []
                     }
                     
                     # Add individual frame metrics
+                    gaussian_by_frame = {
+                        item["frame"]: item["num_gaussians"] for item in all_gaussian_counts
+                    }
                     for i in range(len(all_psnr)):
+                        frame_idx = i + 1
                         frame_data = {
-                            "frame": i + 1,
+                            "frame": frame_idx,
                             "psnr_db": all_psnr[i],
-                            "ate_cm": all_ate[i]
+                            "ate_cm": all_ate[i],
+                            "num_gaussians": gaussian_by_frame.get(frame_idx, 0),
                         }
                         results_data["frame_metrics"].append(frame_data)
                     
