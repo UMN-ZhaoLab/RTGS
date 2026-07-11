@@ -55,6 +55,18 @@ class FrontEnd(mp.Process):
         self.kf_interval = self.config["Training"]["kf_interval"]
         self.window_size = self.config["Training"]["window_size"]
         self.single_thread = self.config["Training"]["single_thread"]
+        self.inline_backend = self.config["Training"].get("use_inline_backend", False)
+        self.disable_keyframe_throttle = self.config["Training"].get(
+            "disable_keyframe_throttle", True
+        )
+
+    def _drain_frontend_sync(self, tag=None):
+        while not self.frontend_queue.empty():
+            data = self.frontend_queue.get()
+            if tag is None or data[0] == tag:
+                self.sync_backend(data)
+                if data[0] == "keyframe":
+                    return
 
     def add_new_keyframe(self, cur_frame_idx, depth=None, opacity=None, init=False):
         rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
@@ -217,11 +229,15 @@ class FrontEnd(mp.Process):
         dist_check = dist > kf_translation * self.median_depth
         dist_check2 = dist > kf_min_translation * self.median_depth
 
+        prev_vis = occ_aware_visibility[last_keyframe_idx]
+        if prev_vis.shape != cur_frame_visibility_filter.shape:
+            return dist_check
+
         union = torch.logical_or(
-            cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
+            cur_frame_visibility_filter, prev_vis
         ).count_nonzero()
         intersection = torch.logical_and(
-            cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
+            cur_frame_visibility_filter, prev_vis
         ).count_nonzero()
         point_ratio_2 = intersection / union
         return (point_ratio_2 < kf_overlap and dist_check2) or dist_check
@@ -237,13 +253,16 @@ class FrontEnd(mp.Process):
         removed_frame = None
         for i in range(N_dont_touch, len(window)):
             kf_idx = window[i]
+            prev_vis = occ_aware_visibility[kf_idx]
+            if prev_vis.shape != cur_frame_visibility_filter.shape:
+                continue
             # szymkiewicz–simpson coefficient
             intersection = torch.logical_and(
-                cur_frame_visibility_filter, occ_aware_visibility[kf_idx]
+                cur_frame_visibility_filter, prev_vis
             ).count_nonzero()
             denom = min(
                 cur_frame_visibility_filter.count_nonzero(),
-                occ_aware_visibility[kf_idx].count_nonzero(),
+                prev_vis.count_nonzero(),
             )
             point_ratio_2 = intersection / denom
             cut_off = (
@@ -290,6 +309,9 @@ class FrontEnd(mp.Process):
     def request_keyframe(self, cur_frame_idx, viewpoint, current_window, depthmap):
         msg = ["keyframe", cur_frame_idx, viewpoint, current_window, depthmap]
         self.backend_queue.put(msg)
+        if self.inline_backend:
+            self._drain_frontend_sync("keyframe")
+            return
         self.requested_keyframe += 1
 
     def reqeust_mapping(self, cur_frame_idx, viewpoint):
@@ -299,6 +321,10 @@ class FrontEnd(mp.Process):
     def request_init(self, cur_frame_idx, viewpoint, depth_map):
         msg = ["init", cur_frame_idx, viewpoint, depth_map]
         self.backend_queue.put(msg)
+        if self.inline_backend:
+            self._drain_frontend_sync("init")
+            self.requested_init = False
+            return
         self.requested_init = True
 
     def sync_backend(self, data):
@@ -679,18 +705,20 @@ class FrontEnd(mp.Process):
                     self.occ_aware_visibility,
                 )
                 if len(self.current_window) < self.window_size:
-                    union = torch.logical_or(
-                        curr_visibility, self.occ_aware_visibility[last_keyframe_idx]
-                    ).count_nonzero()
-                    intersection = torch.logical_and(
-                        curr_visibility, self.occ_aware_visibility[last_keyframe_idx]
-                    ).count_nonzero()
-                    point_ratio = intersection / union
-                    create_kf = (
-                        check_time
-                        and point_ratio < self.config["Training"]["kf_overlap"]
-                    )
-                if self.single_thread:
+                    prev_vis = self.occ_aware_visibility[last_keyframe_idx]
+                    if prev_vis.shape == curr_visibility.shape:
+                        union = torch.logical_or(curr_visibility, prev_vis).count_nonzero()
+                        intersection = torch.logical_and(
+                            curr_visibility, prev_vis
+                        ).count_nonzero()
+                        point_ratio = intersection / union
+                        create_kf = (
+                            check_time
+                            and point_ratio < self.config["Training"]["kf_overlap"]
+                        )
+                    else:
+                        create_kf = check_time
+                if self.single_thread and not self.inline_backend:
                     create_kf = check_time and create_kf
                 if create_kf:
                     self.current_window, removed = self.add_to_window(
@@ -716,6 +744,8 @@ class FrontEnd(mp.Process):
                     )
                 else:
                     self.cleanup(cur_frame_idx)
+                if self.inline_backend and hasattr(self, "backend"):
+                    self.backend.idle_mapping()
                 cur_frame_idx += 1
 
                 if (
@@ -734,8 +764,8 @@ class FrontEnd(mp.Process):
                     )
                 toc.record()
                 torch.cuda.synchronize()
-                if create_kf:
-                    # throttle at 3fps when keyframe is added
+                if create_kf and not self.disable_keyframe_throttle:
+                    # Legacy live-mode throttle; disabled for eval FPS measurement
                     duration = tic.elapsed_time(toc)
                     time.sleep(max(0.01, 1.0 / 3.0 - duration / 1000))
             else:

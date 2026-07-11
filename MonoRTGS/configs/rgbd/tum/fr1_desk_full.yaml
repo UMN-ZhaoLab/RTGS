@@ -1,0 +1,23 @@
+inherit_from: "configs/rgbd/tum/fr1_desk.yaml"
+
+Results:
+  use_gui: False
+  eval_rendering: True
+
+Dataset:
+  max_frames: 100
+
+Training:
+  single_thread: False
+  use_inline_backend: True
+  skip_color_refinement: True
+  enable_fast_mode: False
+  disable_keyframe_throttle: True
+  enable_adaptive_pruning: True
+  target_reduction_ratio: 0.08
+  pruning_start_progress: 0.78
+  pruning_keyframe_interval: 1
+  max_prune_fraction_per_step: 0.03
+  min_mapping_observations: 2
+  gradient_keep_percentile: 0.64
+  min_opacity_protect: 0.85

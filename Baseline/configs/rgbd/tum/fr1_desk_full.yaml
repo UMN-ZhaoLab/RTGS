@@ -1,0 +1,14 @@
+inherit_from: "configs/rgbd/tum/fr1_desk.yaml"
+
+Results:
+  use_gui: False
+  eval_rendering: True
+
+Dataset:
+  max_frames: 100
+
+Training:
+  single_thread: False
+  use_inline_backend: True
+  skip_color_refinement: True
+  disable_keyframe_throttle: True

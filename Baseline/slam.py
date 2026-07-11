@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import queue as thread_queue
+import threading
 from argparse import ArgumentParser
 from datetime import datetime
 
@@ -17,7 +19,7 @@ from utils.config_utils import load_config
 from utils.dataset import load_dataset
 from utils.eval_utils import eval_ate, eval_rendering, save_gaussians
 from utils.logging_utils import Log
-from utils.multiprocessing_utils import FakeQueue
+from utils.multiprocessing_utils import FakeQueue, InlineBackendQueue
 from utils.slam_backend import BackEnd
 from utils.slam_frontend import FrontEnd
 
@@ -60,7 +62,7 @@ class SLAM:
         bg_color = [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        # Force single-threaded mode to avoid CUDA multiprocessing issues
+        self.use_inline_backend = False
         if self.config["Training"].get("single_thread", False):
             Log("Using single-threaded mode to avoid multiprocessing issues")
             frontend_queue = FakeQueue()
@@ -68,6 +70,22 @@ class SLAM:
             q_main2vis = FakeQueue()
             q_vis2main = FakeQueue()
             self.use_multiprocessing = False
+        elif self.config["Training"].get("use_inline_backend", False):
+            Log("Using inline backend for full SLAM pipeline (single CUDA thread)")
+            frontend_queue = thread_queue.Queue()
+            backend_queue = InlineBackendQueue()
+            q_main2vis = FakeQueue()
+            q_vis2main = FakeQueue()
+            self.use_multiprocessing = False
+            self.use_inline_backend = True
+        elif self.config["Training"].get("use_threaded_backend", False):
+            Log("Using threaded backend for full SLAM pipeline (shared CUDA context)")
+            frontend_queue = thread_queue.Queue()
+            backend_queue = thread_queue.Queue()
+            q_main2vis = FakeQueue()
+            q_vis2main = FakeQueue()
+            self.use_multiprocessing = False
+            self.use_threaded_backend = True
         else:
             # Try to use multiprocessing, but fall back to single-threaded if it fails
             try:
@@ -101,9 +119,11 @@ class SLAM:
         self.frontend.gaussians = self.gaussians  # Ensure gaussians are passed to frontend
         self.frontend.set_hyperparams()
         
-        # In single-threaded mode, pass backend reference to frontend for direct calls
         if not self.use_multiprocessing:
             self.frontend.backend = self.backend
+        if self.use_inline_backend:
+            backend_queue.set_backend(self.backend)
+            self.frontend.inline_backend = True
 
         self.backend.gaussians = self.gaussians
         self.backend.background = self.background
@@ -135,6 +155,16 @@ class SLAM:
             backend_process.start()
             self.frontend.run()
             backend_queue.put(["pause"])
+        elif self.use_inline_backend:
+            Log("Running frontend with inline backend")
+            self.frontend.run()
+        elif getattr(self, "use_threaded_backend", False):
+            Log("Running frontend with threaded backend")
+            backend_thread = threading.Thread(target=self.backend.run, daemon=True)
+            backend_thread.start()
+            self.frontend.run()
+            backend_queue.put(["stop"])
+            backend_thread.join(timeout=60)
         else:
             # Single-threaded mode: run backend in main thread
             Log("Running in single-threaded mode")
@@ -181,44 +211,49 @@ class SLAM:
                 # Just log the metrics without wandb
                 Log(f"Before optimization - PSNR: {rendering_result['mean_psnr']:.4f}")
 
-            # re-used the frontend queue to retrive the gaussians from the backend.
-            while not frontend_queue.empty():
-                frontend_queue.get()
-            backend_queue.put(["color_refinement"])
-            while True:
-                if frontend_queue.empty():
-                    time.sleep(0.01)
-                    continue
-                data = frontend_queue.get()
-                if data[0] == "sync_backend" and frontend_queue.empty():
-                    gaussians = data[1]
-                    self.gaussians = gaussians
-                    break
-
-            rendering_result = eval_rendering(
-                self.frontend.cameras,
-                self.gaussians,
-                self.dataset,
-                self.save_dir,
-                self.pipeline_params,
-                self.background,
-                kf_indices=kf_indices,
-                iteration="after_opt",
-            )
-            if self.config["Results"].get("use_wandb", False):
-                metrics_table.add_data(
-                    "After",
-                    rendering_result["mean_psnr"],
-                    rendering_result["mean_ssim"],
-                    rendering_result["mean_lpips"],
-                    ATE,
-                    FPS,
-                )
-                # wandb.log({"Metrics": metrics_table})  # Disabled wandb
+            skip_refinement = self.config["Training"].get("skip_color_refinement", False)
+            if skip_refinement:
+                Log("Skipping color refinement (skip_color_refinement=True)")
+                save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
             else:
-                # Just log the metrics without wandb
-                Log(f"After optimization - PSNR: {rendering_result['mean_psnr']:.4f}")
-            save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
+                # re-used the frontend queue to retrive the gaussians from the backend.
+                while not frontend_queue.empty():
+                    frontend_queue.get()
+                backend_queue.put(["color_refinement"])
+                while True:
+                    if frontend_queue.empty():
+                        time.sleep(0.01)
+                        continue
+                    data = frontend_queue.get()
+                    if data[0] == "sync_backend" and frontend_queue.empty():
+                        gaussians = data[1]
+                        self.gaussians = gaussians
+                        break
+
+                rendering_result = eval_rendering(
+                    self.frontend.cameras,
+                    self.gaussians,
+                    self.dataset,
+                    self.save_dir,
+                    self.pipeline_params,
+                    self.background,
+                    kf_indices=kf_indices,
+                    iteration="after_opt",
+                )
+                if self.config["Results"].get("use_wandb", False):
+                    metrics_table.add_data(
+                        "After",
+                        rendering_result["mean_psnr"],
+                        rendering_result["mean_ssim"],
+                        rendering_result["mean_lpips"],
+                        ATE,
+                        FPS,
+                    )
+                    # wandb.log({"Metrics": metrics_table})  # Disabled wandb
+                else:
+                    # Just log the metrics without wandb
+                    Log(f"After optimization - PSNR: {rendering_result['mean_psnr']:.4f}")
+                save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
 
         if self.use_multiprocessing:
             backend_queue.put(["stop"])

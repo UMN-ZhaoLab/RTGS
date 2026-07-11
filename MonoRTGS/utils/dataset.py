@@ -399,9 +399,12 @@ class TUMDataset(MonocularDataset):
         dataset_path = config["Dataset"]["dataset_path"]
         parser = TUMParser(dataset_path)
         self.num_imgs = parser.n_img
-        self.color_paths = parser.color_paths
-        self.depth_paths = parser.depth_paths
-        self.poses = parser.poses
+        max_frames = config.get("Dataset", {}).get("max_frames")
+        if max_frames is not None:
+            self.num_imgs = min(self.num_imgs, int(max_frames))
+        self.color_paths = parser.color_paths[: self.num_imgs]
+        self.depth_paths = parser.depth_paths[: self.num_imgs]
+        self.poses = parser.poses[: self.num_imgs]
 
 
 class ReplicaDataset(MonocularDataset):

@@ -18,6 +18,27 @@ class FakeQueue:
         return True
 
 
+class InlineBackendQueue:
+    """Process backend messages synchronously in the main thread."""
+
+    def __init__(self):
+        self.backend = None
+
+    def set_backend(self, backend):
+        self.backend = backend
+
+    def put(self, data):
+        if self.backend is None:
+            raise RuntimeError("InlineBackendQueue backend not set")
+        self.backend.process_message(data)
+
+    def get(self):
+        raise mp.queues.Empty
+
+    def empty(self):
+        return True
+
+
 def clone_obj(obj):
     """Clone object while handling CUDA tensors safely"""
     try:

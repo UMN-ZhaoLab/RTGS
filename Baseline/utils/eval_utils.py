@@ -1,6 +1,10 @@
 import json
 import os
 
+import matplotlib
+
+matplotlib.use("Agg")
+
 import cv2
 import evo
 import numpy as np
@@ -46,21 +50,28 @@ def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
     ) as f:
         json.dump(ape_stats, f, indent=4)
 
-    plot_mode = evo.tools.plot.PlotMode.xy
-    fig = plt.figure()
-    ax = evo.tools.plot.prepare_axis(fig, plot_mode)
-    ax.set_title(f"ATE RMSE: {ape_stat}")
-    evo.tools.plot.traj(ax, plot_mode, traj_ref, "--", "gray", "gt")
-    evo.tools.plot.traj_colormap(
-        ax,
-        traj_est_aligned,
-        ape_metric.error,
-        plot_mode,
-        min_map=ape_stats["min"],
-        max_map=ape_stats["max"],
-    )
-    ax.legend()
-    plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
+    try:
+        matplotlib.use("Agg", force=True)
+        plot_mode = evo.tools.plot.PlotMode.xy
+        fig = plt.figure()
+        ax = evo.tools.plot.prepare_axis(fig, plot_mode)
+        ax.set_title(f"ATE RMSE: {ape_stat}")
+        evo.tools.plot.traj(ax, plot_mode, traj_ref, "--", "gray", "gt")
+        evo.tools.plot.traj_colormap(
+            ax,
+            traj_est_aligned,
+            ape_metric.error,
+            plot_mode,
+            min_map=ape_stats["min"],
+            max_map=ape_stats["max"],
+        )
+        ax.legend()
+        plt.savefig(
+            os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90
+        )
+        plt.close(fig)
+    except Exception as e:
+        Log(f"Skipping ATE plot: {e}", tag="Eval")
 
     return ape_stat
 
@@ -109,7 +120,11 @@ def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False)
         label=label_evo,
         monocular=monocular,
     )
-    wandb.log({"frame_idx": latest_frame_idx, "ate": ate})
+    try:
+        if wandb.run is not None:
+            wandb.log({"frame_idx": latest_frame_idx, "ate": ate})
+    except Exception:
+        pass
     return ate
 
 

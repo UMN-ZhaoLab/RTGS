@@ -1,8 +1,123 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from gaussian_splatting.utils.graphics_utils import getProjectionMatrix2, getWorld2View2
 from utils.slam_utils import image_gradient, image_gradient_mask
+
+
+class ScaledCameraView:
+    """Low-resolution view for tracking; shares pose parameters with base camera."""
+
+    def __init__(self, base_camera, scale: float):
+        self._base = base_camera
+        H = max(2, int(round(base_camera.image_height * scale)))
+        W = max(2, int(round(base_camera.image_width * scale)))
+        H -= H % 2
+        W -= W % 2
+        s = H / base_camera.image_height
+
+        self.uid = base_camera.uid
+        self.device = base_camera.device
+        self.image_height = H
+        self.image_width = W
+        self.fx = base_camera.fx * s
+        self.fy = base_camera.fy * s
+        self.cx = base_camera.cx * s
+        self.cy = base_camera.cy * s
+        self.FoVx = base_camera.FoVx
+        self.FoVy = base_camera.FoVy
+
+        self.projection_matrix = getProjectionMatrix2(
+            znear=0.01,
+            zfar=100.0,
+            fx=self.fx,
+            fy=self.fy,
+            cx=self.cx,
+            cy=self.cy,
+            W=W,
+            H=H,
+        ).transpose(0, 1).to(device=base_camera.device)
+
+        self.original_image = F.interpolate(
+            base_camera.original_image.unsqueeze(0),
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
+        if base_camera.depth is not None:
+            depth_t = (
+                torch.from_numpy(base_camera.depth)
+                .float()
+                .to(base_camera.device)
+                .unsqueeze(0)
+                .unsqueeze(0)
+            )
+            self.depth = (
+                F.interpolate(depth_t, size=(H, W), mode="nearest")
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
+        else:
+            self.depth = None
+
+        if base_camera.grad_mask is not None:
+            grad_mask = base_camera.grad_mask.float()
+            if grad_mask.ndim == 2:
+                grad_mask = grad_mask.unsqueeze(0)
+            self.grad_mask = (
+                F.interpolate(
+                    grad_mask.unsqueeze(0),
+                    size=(H, W),
+                    mode="nearest",
+                )
+                .squeeze(0)
+                .bool()
+            )
+        else:
+            self.grad_mask = None
+
+    @property
+    def R(self):
+        return self._base.R
+
+    @property
+    def T(self):
+        return self._base.T
+
+    @property
+    def cam_rot_delta(self):
+        return self._base.cam_rot_delta
+
+    @property
+    def cam_trans_delta(self):
+        return self._base.cam_trans_delta
+
+    @property
+    def exposure_a(self):
+        return self._base.exposure_a
+
+    @property
+    def exposure_b(self):
+        return self._base.exposure_b
+
+    @property
+    def world_view_transform(self):
+        return getWorld2View2(self.R, self.T).transpose(0, 1)
+
+    @property
+    def full_proj_transform(self):
+        return (
+            self.world_view_transform.unsqueeze(0).bmm(
+                self.projection_matrix.unsqueeze(0)
+            )
+        ).squeeze(0)
+
+    @property
+    def camera_center(self):
+        return self.world_view_transform.inverse()[3, :3]
 
 
 class Camera(nn.Module):
@@ -110,6 +225,16 @@ class Camera(nn.Module):
     def update_RT(self, R, t):
         self.R = R.to(device=self.device)
         self.T = t.to(device=self.device)
+
+    def make_scaled_view(self, scale: float):
+        if scale >= 1.0:
+            return self
+        if not hasattr(self, "_scaled_view_cache"):
+            self._scaled_view_cache = {}
+        key = round(scale, 3)
+        if key not in self._scaled_view_cache:
+            self._scaled_view_cache[key] = ScaledCameraView(self, scale)
+        return self._scaled_view_cache[key]
 
     def compute_grad_mask(self, config):
         edge_threshold = config["Training"]["edge_threshold"]

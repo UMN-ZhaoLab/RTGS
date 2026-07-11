@@ -55,7 +55,8 @@ class FrontEnd(mp.Process):
         self.kf_interval = self.config["Training"]["kf_interval"]
         self.window_size = self.config["Training"]["window_size"]
         self.single_thread = self.config["Training"]["single_thread"]
-        
+        self.inline_backend = self.config["Training"].get("use_inline_backend", False)
+
         # Add adaptive pruning parameters
         self.enable_adaptive_pruning = self.config["Training"].get("enable_adaptive_pruning", True)
         self.target_reduction_ratio = self.config["Training"].get("target_reduction_ratio", 0.5)
@@ -68,13 +69,106 @@ class FrontEnd(mp.Process):
         self.fast_init_ratio = self.config["Training"].get("fast_init_ratio", 4)
         self.max_keyframes_per_iteration = self.config["Training"].get("max_keyframes_per_iteration", 3)
         self.max_random_viewpoints = self.config["Training"].get("max_random_viewpoints", 1)
+        self.tracking_resolution_scale = self.config["Training"].get(
+            "tracking_resolution_scale", 1.0
+        )
+        self.enable_adaptive_tracking_resolution = self.config["Training"].get(
+            "enable_adaptive_tracking_resolution", False
+        )
+        self.tracking_resolution_min_scale = self.config["Training"].get(
+            "tracking_resolution_min_scale", 0.5
+        )
+        self.tracking_resolution_max_scale = self.config["Training"].get(
+            "tracking_resolution_max_scale", 1.0
+        )
+        self.tracking_refine_iters = self.config["Training"].get(
+            "tracking_refine_iters", 12
+        )
+        self.tracking_refine_scale = self.config["Training"].get(
+            "tracking_refine_scale", 0.85
+        )
+        self.idle_mapping_interval = self.config["Training"].get(
+            "idle_mapping_interval", 1
+        )
+        self.tracking_min_iters = int(
+            self.config["Training"].get("tracking_min_iters", 15)
+        )
+        self.tracking_converge_threshold = float(
+            self.config["Training"].get("tracking_converge_threshold", 1e-4)
+        )
+        self.tracking_converge_patience = int(
+            self.config["Training"].get("tracking_converge_patience", 2)
+        )
+        self.disable_keyframe_throttle = self.config["Training"].get(
+            "disable_keyframe_throttle", True
+        )
+        self._idle_frame_counter = 0
+        self._tracking_scale_cache = {}
 
     def register_keyframe_growth(self, added_gaussians):
-        if added_gaussians <= 0:
-            return
-        if not hasattr(self.gaussians, "reference_gaussian_count"):
-            self.gaussians.reference_gaussian_count = self.gaussians.get_xyz.shape[0]
-        self.gaussians.reference_gaussian_count += int(added_gaussians)
+        if self.gaussians:
+            self.gaussians.register_keyframe_growth(added_gaussians)
+
+    def _tracking_motion_magnitude(self, viewpoint, prev_viewpoint):
+        trans_motion = torch.norm(viewpoint.T - prev_viewpoint.T).item()
+        rot_delta = viewpoint.R @ prev_viewpoint.R.transpose(0, 1)
+        trace = torch.clamp((rot_delta.trace() - 1.0) * 0.5, -1.0, 1.0)
+        rot_motion = torch.acos(trace).item()
+        return trans_motion, rot_motion
+
+    def select_adaptive_tracking_scale(self, cur_frame_idx, viewpoint, prev_viewpoint):
+        cfg = self.config["Training"]
+        if not self.enable_adaptive_tracking_resolution:
+            return float(self.tracking_resolution_scale)
+
+        min_scale = float(self.tracking_resolution_min_scale)
+        max_scale = float(self.tracking_resolution_max_scale)
+        if min_scale > max_scale:
+            min_scale, max_scale = max_scale, min_scale
+
+        if not self.initialized or len(self.current_window) < self.window_size:
+            return max_scale
+
+        trans_motion, rot_motion = self._tracking_motion_magnitude(viewpoint, prev_viewpoint)
+        trans_low = float(cfg.get("tracking_motion_trans_low", 0.008))
+        trans_high = float(cfg.get("tracking_motion_trans_high", 0.04))
+        rot_low = float(cfg.get("tracking_motion_rot_low", 0.015))
+        rot_high = float(cfg.get("tracking_motion_rot_high", 0.06))
+
+        trans_t = (trans_motion - trans_low) / max(trans_high - trans_low, 1e-6)
+        rot_t = (rot_motion - rot_low) / max(rot_high - rot_low, 1e-6)
+        motion_need = max(0.0, min(1.0, max(trans_t, rot_t)))
+
+        last_kf = self.current_window[0] if self.current_window else 0
+        since_kf = cur_frame_idx - last_kf
+        kf_need = 1.0 if since_kf >= self.kf_interval - 1 else 0.0
+
+        n_gaussians = (
+            int(self.gaussians.get_xyz.shape[0])
+            if self.gaussians and hasattr(self.gaussians, "get_xyz")
+            else 0
+        )
+        gauss_ref = float(cfg.get("tracking_gaussian_ref", 25000))
+        gauss_pressure = min(1.0, max(0.0, (n_gaussians - gauss_ref * 0.75) / (gauss_ref * 0.45)))
+
+        quality_need = max(motion_need, kf_need)
+        scale = min_scale + (max_scale - min_scale) * quality_need
+        scale -= (max_scale - min_scale) * 0.35 * gauss_pressure * (1.0 - 0.5 * quality_need)
+        scale = max(min_scale, min(max_scale, scale))
+
+        if cur_frame_idx % 25 == 0:
+            Log(
+                f"Adaptive tracking scale {scale:.2f} "
+                f"(motion={motion_need:.2f}, kf={kf_need:.0f}, "
+                f"gauss={n_gaussians}, pressure={gauss_pressure:.2f})"
+            )
+        return scale
+
+    def _get_tracking_view(self, viewpoint, scale):
+        key = (viewpoint.uid, round(scale, 3))
+        if key not in self._tracking_scale_cache:
+            self._tracking_scale_cache[key] = viewpoint.make_scaled_view(scale)
+        return self._tracking_scale_cache[key]
 
     def apply_adaptive_pruning(self, cur_frame_idx):
         if (
@@ -91,6 +185,21 @@ class FrontEnd(mp.Process):
                 target_reduction_ratio=self.target_reduction_ratio,
                 frame_idx=cur_frame_idx,
                 total_frames=total_frames,
+                pruning_start_progress=self.config["Training"].get(
+                    "pruning_start_progress", 0.5
+                ),
+                max_prune_fraction_per_step=self.config["Training"].get(
+                    "max_prune_fraction_per_step", 0.08
+                ),
+                min_mapping_observations=self.config["Training"].get(
+                    "min_mapping_observations", 2
+                ),
+                gradient_keep_percentile=self.config["Training"].get(
+                    "gradient_keep_percentile", 0.70
+                ),
+                min_opacity_protect=self.config["Training"].get(
+                    "min_opacity_protect", 0.35
+                ),
             )
             after = self.gaussians.get_xyz.shape[0]
             if removed and cur_frame_idx % 50 == 0:
@@ -102,6 +211,14 @@ class FrontEnd(mp.Process):
                 )
         except Exception as e:
             Log(f"Adaptive pruning failed: {e}")
+
+    def _drain_frontend_sync(self, tag=None):
+        while not self.frontend_queue.empty():
+            data = self.frontend_queue.get()
+            if tag is None or data[0] == tag:
+                self.sync_backend(data)
+                if data[0] == "keyframe":
+                    return
 
     def add_new_keyframe(self, cur_frame_idx, depth=None, opacity=None, init=False):
         rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
@@ -209,16 +326,57 @@ class FrontEnd(mp.Process):
         )
 
         pose_optimizer = torch.optim.Adam(opt_params)
-        
-        # Optimize: Reduce tracking iterations for faster processing
+
+        coarse_scale = self.select_adaptive_tracking_scale(
+            cur_frame_idx, viewpoint, prev
+        )
+        refine_scale = min(1.0, max(coarse_scale, float(self.tracking_refine_scale)))
+        use_variable_res = coarse_scale < 0.999 or refine_scale < 0.999
+
         if self.enable_fast_mode:
             optimized_tracking_itr = max(1, self.tracking_itr_num // self.fast_tracking_ratio)
+        elif self.config["Training"].get("reduce_tracking_iters", False):
+            tr = float(self.config["Training"].get("fast_tracking_ratio", 1.5))
+            optimized_tracking_itr = max(
+                self.tracking_min_iters,
+                int(round(self.tracking_itr_num / max(tr, 1.0))),
+            )
         else:
             optimized_tracking_itr = self.tracking_itr_num
-            
+
+        refine_iters = min(
+            int(self.tracking_refine_iters),
+            max(1, optimized_tracking_itr // 3),
+        )
+        if not use_variable_res:
+            refine_iters = 0
+
+        last_loss = None
+        converge_hits = 0
+        min_iters = min(self.tracking_min_iters, optimized_tracking_itr)
         for tracking_itr in range(optimized_tracking_itr):
+            if refine_iters > 0 and tracking_itr >= optimized_tracking_itr - refine_iters:
+                iter_scale = refine_scale
+            else:
+                iter_scale = coarse_scale
+
+            if (
+                last_loss is not None
+                and tracking_itr > optimized_tracking_itr // 2
+                and last_loss.item() > self.config["Training"].get(
+                    "tracking_loss_refine_threshold", 0.08
+                )
+            ):
+                iter_scale = max(iter_scale, refine_scale)
+
+            tracking_view = (
+                self._get_tracking_view(viewpoint, iter_scale)
+                if iter_scale < 0.999
+                else viewpoint
+            )
+
             render_pkg = render(
-                viewpoint, self.gaussians, self.pipeline_params, self.background
+                tracking_view, self.gaussians, self.pipeline_params, self.background
             )
             image, depth, opacity = (
                 render_pkg["render"],
@@ -227,13 +385,16 @@ class FrontEnd(mp.Process):
             )
             pose_optimizer.zero_grad()
             loss_tracking = get_loss_tracking(
-                self.config, image, depth, opacity, viewpoint
+                self.config, image, depth, opacity, tracking_view
             )
             loss_tracking.backward()
+            last_loss = loss_tracking.detach()
 
             with torch.no_grad():
                 pose_optimizer.step()
-                converged = update_pose(viewpoint)
+                converged = update_pose(
+                    viewpoint, converged_threshold=self.tracking_converge_threshold
+                )
 
             if tracking_itr % 10 == 0:
                 self.q_main2vis.put(
@@ -245,15 +406,46 @@ class FrontEnd(mp.Process):
                         else np.zeros((viewpoint.image_height, viewpoint.image_width)),
                     )
                 )
-            if converged:
-                break
+            # Early stop after min iters + consecutive pose convergence
+            if tracking_itr + 1 >= min_iters and converged:
+                converge_hits += 1
+                if converge_hits >= self.tracking_converge_patience:
+                    break
+            else:
+                converge_hits = 0
 
-        self.median_depth = get_median_depth(depth, opacity)
-        
-        # Apply adaptive pruning after tracking
-        self.apply_adaptive_pruning(cur_frame_idx)
-        
+        # Optional full-res finalize (expensive). Default off: n_touched is
+        # per-Gaussian so low-res pkg is enough for keyframe checks; full-res
+        # depth is refreshed only when creating a keyframe.
+        if use_variable_res and self.config["Training"].get(
+            "tracking_always_fullres_finalize", False
+        ):
+            render_pkg = render(
+                viewpoint, self.gaussians, self.pipeline_params, self.background
+            )
+
+        self.median_depth = get_median_depth(
+            render_pkg["depth"], render_pkg["opacity"]
+        )
         return render_pkg
+
+    def finalize_tracking_fullres(self, viewpoint, render_pkg):
+        """Full-res render for keyframe depth when tracking used a scaled view."""
+        if render_pkg is None:
+            return render_pkg
+        depth = render_pkg.get("depth")
+        if (
+            depth is not None
+            and depth.ndim >= 2
+            and depth.shape[-2] == viewpoint.image_height
+            and depth.shape[-1] == viewpoint.image_width
+        ):
+            return render_pkg
+        full_pkg = render(
+            viewpoint, self.gaussians, self.pipeline_params, self.background
+        )
+        self.median_depth = get_median_depth(full_pkg["depth"], full_pkg["opacity"])
+        return full_pkg
 
     def is_keyframe(
         self,
@@ -275,11 +467,15 @@ class FrontEnd(mp.Process):
         dist_check = dist > kf_translation * self.median_depth
         dist_check2 = dist > kf_min_translation * self.median_depth
 
+        prev_vis = occ_aware_visibility[last_keyframe_idx]
+        if prev_vis.shape != cur_frame_visibility_filter.shape:
+            return dist_check
+
         union = torch.logical_or(
-            cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
+            cur_frame_visibility_filter, prev_vis
         ).count_nonzero()
         intersection = torch.logical_and(
-            cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
+            cur_frame_visibility_filter, prev_vis
         ).count_nonzero()
         point_ratio_2 = intersection / union
         return (point_ratio_2 < kf_overlap and dist_check2) or dist_check
@@ -295,13 +491,16 @@ class FrontEnd(mp.Process):
         removed_frame = None
         for i in range(N_dont_touch, len(window)):
             kf_idx = window[i]
+            prev_vis = occ_aware_visibility[kf_idx]
+            if prev_vis.shape != cur_frame_visibility_filter.shape:
+                continue
             # szymkiewicz–simpson coefficient
             intersection = torch.logical_and(
-                cur_frame_visibility_filter, occ_aware_visibility[kf_idx]
+                cur_frame_visibility_filter, prev_vis
             ).count_nonzero()
             denom = min(
                 cur_frame_visibility_filter.count_nonzero(),
-                occ_aware_visibility[kf_idx].count_nonzero(),
+                prev_vis.count_nonzero(),
             )
             point_ratio_2 = intersection / denom
             cut_off = (
@@ -348,6 +547,9 @@ class FrontEnd(mp.Process):
     def request_keyframe(self, cur_frame_idx, viewpoint, current_window, depthmap):
         msg = ["keyframe", cur_frame_idx, viewpoint, current_window, depthmap]
         self.backend_queue.put(msg)
+        if self.inline_backend:
+            self._drain_frontend_sync("keyframe")
+            return
         self.requested_keyframe += 1
 
     def reqeust_mapping(self, cur_frame_idx, viewpoint):
@@ -357,13 +559,17 @@ class FrontEnd(mp.Process):
     def request_init(self, cur_frame_idx, viewpoint, depth_map):
         msg = ["init", cur_frame_idx, viewpoint, depth_map]
         self.backend_queue.put(msg)
+        if self.inline_backend:
+            self._drain_frontend_sync("init")
+            self.requested_init = False
+            return
         self.requested_init = True
 
     def sync_backend(self, data):
         self.gaussians = data[1]
         occ_aware_visibility = data[2]
         keyframes = data[3]
-        self.occ_aware_visibility = occ_aware_visibility
+        self.occ_aware_visibility.update(occ_aware_visibility)
 
         for kf_id, kf_R, kf_T in keyframes:
             self.cameras[kf_id].update_RT(kf_R.clone(), kf_T.clone())
@@ -753,20 +959,24 @@ class FrontEnd(mp.Process):
                     self.occ_aware_visibility,
                 )
                 if len(self.current_window) < self.window_size:
-                    union = torch.logical_or(
-                        curr_visibility, self.occ_aware_visibility[last_keyframe_idx]
-                    ).count_nonzero()
-                    intersection = torch.logical_and(
-                        curr_visibility, self.occ_aware_visibility[last_keyframe_idx]
-                    ).count_nonzero()
-                    point_ratio = intersection / union
-                    create_kf = (
-                        check_time
-                        and point_ratio < self.config["Training"]["kf_overlap"]
-                    )
-                if self.single_thread:
+                    prev_vis = self.occ_aware_visibility[last_keyframe_idx]
+                    if prev_vis.shape == curr_visibility.shape:
+                        union = torch.logical_or(curr_visibility, prev_vis).count_nonzero()
+                        intersection = torch.logical_and(
+                            curr_visibility, prev_vis
+                        ).count_nonzero()
+                        point_ratio = intersection / union
+                        create_kf = (
+                            check_time
+                            and point_ratio < self.config["Training"]["kf_overlap"]
+                        )
+                    else:
+                        create_kf = check_time
+                if self.single_thread and not self.inline_backend:
                     create_kf = check_time and create_kf
                 if create_kf:
+                    render_pkg = self.finalize_tracking_fullres(viewpoint, render_pkg)
+                    curr_visibility = (render_pkg["n_touched"] > 0).long()
                     self.current_window, removed = self.add_to_window(
                         cur_frame_idx,
                         curr_visibility,
@@ -790,6 +1000,10 @@ class FrontEnd(mp.Process):
                     )
                 else:
                     self.cleanup(cur_frame_idx)
+                if self.inline_backend and hasattr(self, "backend"):
+                    self._idle_frame_counter += 1
+                    if self._idle_frame_counter % self.idle_mapping_interval == 0:
+                        self.backend.idle_mapping()
                 cur_frame_idx += 1
 
                 if (
@@ -808,8 +1022,8 @@ class FrontEnd(mp.Process):
                     )
                 toc.record()
                 torch.cuda.synchronize()
-                if create_kf:
-                    # throttle at 3fps when keyframe is added
+                if create_kf and not self.disable_keyframe_throttle:
+                    # Legacy live-mode throttle; disabled for eval FPS measurement
                     duration = tic.elapsed_time(toc)
                     time.sleep(max(0.01, 1.0 / 3.0 - duration / 1000))
             else:

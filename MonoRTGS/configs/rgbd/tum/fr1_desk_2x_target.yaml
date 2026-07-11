@@ -1,0 +1,42 @@
+inherit_from: "configs/rgbd/tum/fr1_desk_full.yaml"
+
+# RTGS full-pipeline config (~2× FPS vs Baseline, PSNR ≈ unchanged)
+Training:
+  # Adaptive tracking resolution
+  enable_adaptive_tracking_resolution: True
+  tracking_resolution_min_scale: 0.60
+  tracking_resolution_max_scale: 1.0
+  tracking_refine_iters: 10
+  tracking_refine_scale: 0.85
+  tracking_gaussian_ref: 25000
+  tracking_always_fullres_finalize: False
+
+  # Tracking early-stop + soft iter cut
+  reduce_tracking_iters: True
+  fast_tracking_ratio: 1.6
+  tracking_min_iters: 10
+  tracking_converge_threshold: 3.0e-4
+  tracking_converge_patience: 2
+  disable_keyframe_throttle: True
+
+  # Mapping ÷2.1 with protected init BA
+  reduce_mapping_iters: True
+  protect_init_ba: True
+  fast_mapping_ratio: 2.1
+  fast_init_ratio: 1.6
+  max_random_viewpoints: 1
+
+  # Idle mapping skip + slightly sparser keyframes
+  idle_mapping_interval: 5
+  idle_mapping_prune_interval: 12
+  kf_interval: 6
+
+  # Late gradient prune
+  enable_adaptive_pruning: True
+  target_reduction_ratio: 0.14
+  pruning_start_progress: 0.72
+  pruning_keyframe_interval: 1
+  max_prune_fraction_per_step: 0.04
+  min_mapping_observations: 2
+  gradient_keep_percentile: 0.58
+  min_opacity_protect: 0.85

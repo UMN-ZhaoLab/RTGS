@@ -1,0 +1,8 @@
+inherit_from: "configs/rgbd/tum/base_config.yaml"
+
+Results:
+  use_gui: False
+  eval_rendering: True
+
+Training:
+  single_thread: False

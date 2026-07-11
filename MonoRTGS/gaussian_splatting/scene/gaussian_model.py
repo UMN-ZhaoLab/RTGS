@@ -694,60 +694,106 @@ class GaussianModel:
         )
         self.denom[update_filter] += 1
 
+    def register_keyframe_growth(self, added_gaussians):
+        if added_gaussians <= 0:
+            return
+        if not hasattr(self, "reference_gaussian_count"):
+            self.reference_gaussian_count = self.get_xyz.shape[0] - int(added_gaussians)
+        self.reference_gaussian_count += int(added_gaussians)
+
     def adaptive_pruning(
         self,
-        target_reduction_ratio=0.5,
+        target_reduction_ratio=0.35,
         frame_idx=0,
         total_frames=100,
+        pruning_start_progress=0.35,
+        max_prune_fraction_per_step=0.10,
+        min_mapping_observations=1,
+        gradient_keep_percentile=0.45,
+        min_opacity_protect=0.85,
+        protected_kf_ids=None,
     ):
         """
-        Adaptive pruning that gradually approaches target_reduction_ratio
-        reduction relative to the cumulative reference map size.
+        RTGS: after mapping, drop the lowest-gradient Gaussians (smallest
+        loss contribution). Protect only the top gradient contributors.
         """
         if not hasattr(self, "reference_gaussian_count"):
             self.reference_gaussian_count = self.get_xyz.shape[0]
 
         current_count = self.get_xyz.shape[0]
-        reference_count = self.reference_gaussian_count
         progress_ratio = min(1.0, frame_idx / max(total_frames - 1, 1))
-        target_final_count = int(reference_count * (1 - target_reduction_ratio))
-        current_target_count = int(
-            reference_count * (1 - target_reduction_ratio * progress_ratio)
-        )
-        current_target_count = max(current_target_count, target_final_count)
-
-        if current_count <= current_target_count:
+        if progress_ratio < pruning_start_progress:
             return 0
 
-        gaussians_to_remove = current_count - current_target_count
-        
-        # Create pruning mask based on multiple criteria
-        pruning_scores = torch.zeros(current_count, device="cuda")
-        
-        # 1. Opacity-based score (lower opacity = higher chance to be removed)
-        opacity_scores = 1.0 - self.get_opacity.squeeze()
-        pruning_scores += opacity_scores * 0.4
-        
-        # 2. Scale-based score (very small or very large gaussians)
-        scale_norms = torch.norm(self.get_scaling, dim=1)
-        scale_median = torch.median(scale_norms)
-        scale_scores = torch.abs(scale_norms - scale_median) / (scale_median + 1e-6)
-        pruning_scores += scale_scores * 0.3
-        
-        # 3. Observation count score (less observed = higher chance to be removed)
-        if hasattr(self, 'n_obs') and self.n_obs.shape[0] == current_count:
-            obs_scores = 1.0 - (self.n_obs.float() / (self.n_obs.float().max() + 1e-6))
-            pruning_scores += obs_scores.cuda() * 0.2
-        
-        # 4. Random component for diversity
-        random_scores = torch.rand(current_count, device="cuda") * 0.1
-        pruning_scores += random_scores
-        
-        # Select gaussians to remove
-        _, indices_to_remove = torch.topk(pruning_scores, gaussians_to_remove, largest=True)
+        active_progress = (progress_ratio - pruning_start_progress) / max(
+            1.0 - pruning_start_progress, 1e-6
+        )
+        active_progress = min(1.0, max(0.0, active_progress))
+
+        # Prune budget: step cap scaled by sequence progress toward final ratio
+        step_budget = max(
+            1, int(current_count * max_prune_fraction_per_step * max(active_progress, 0.25))
+        )
+        target_final_count = int(current_count * (1 - target_reduction_ratio))
+        gaussians_to_remove = max(0, current_count - target_final_count)
+        gaussians_to_remove = min(step_budget, gaussians_to_remove)
+        gaussians_to_remove = min(gaussians_to_remove, max(1, current_count - 1))
+        if gaussians_to_remove <= 0:
+            return 0
+
+        if not hasattr(self, "xyz_gradient_accum") or not hasattr(self, "denom"):
+            return 0
+        if self.xyz_gradient_accum.shape[0] != current_count:
+            return 0
+
+        denom = self.denom.squeeze().float()
+        grad_signal = (self.xyz_gradient_accum.squeeze() / (denom + 1e-6)).float()
+        opacity = self.get_opacity.squeeze()
+
+        eligible = denom >= float(min_mapping_observations)
+        if protected_kf_ids and hasattr(self, "unique_kfIDs"):
+            kf_ids = self.unique_kfIDs.cuda()
+            window_kf = torch.tensor(
+                protected_kf_ids, device="cuda", dtype=kf_ids.dtype
+            )
+            stale = ~torch.isin(kf_ids, window_kf)
+            eligible &= stale
+
+        n_eligible = int(eligible.sum().item())
+        if n_eligible <= gaussians_to_remove:
+            gaussians_to_remove = max(0, n_eligible - 1)
+        if gaussians_to_remove <= 0:
+            return 0
+
+        protected = ~eligible
+        if eligible.any():
+            grad_thresh = torch.quantile(grad_signal[eligible], gradient_keep_percentile)
+            protected |= grad_signal >= grad_thresh
+        protected |= opacity >= min_opacity_protect
+        if hasattr(self, "n_obs") and self.n_obs.shape[0] == current_count:
+            n_obs = self.n_obs.cuda().squeeze().float()
+            protected |= n_obs >= 3.0
+        if protected_kf_ids and hasattr(self, "unique_kfIDs"):
+            kf_ids = self.unique_kfIDs.cuda()
+            window_kf = torch.tensor(
+                protected_kf_ids, device="cuda", dtype=kf_ids.dtype
+            )
+            protected |= torch.isin(kf_ids, window_kf)
+
+        candidates = ~protected
+        n_candidates = int(candidates.sum().item())
+        if n_candidates == 0:
+            return 0
+
+        gaussians_to_remove = min(gaussians_to_remove, n_candidates)
+        removal_score = grad_signal.clone()
+        removal_score[protected] = float("inf")
+        _, indices_to_remove = torch.topk(
+            removal_score, gaussians_to_remove, largest=False
+        )
+
         prune_mask = torch.zeros(current_count, dtype=torch.bool, device="cuda")
         prune_mask[indices_to_remove] = True
-        
-        # Apply pruning
         self.prune_points(prune_mask)
+        self.reference_gaussian_count = self.get_xyz.shape[0]
         return gaussians_to_remove
